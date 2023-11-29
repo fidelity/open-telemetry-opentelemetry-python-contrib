@@ -40,7 +40,6 @@ class TestPymongo(TestBase):
         )
         with patch:
             PymongoInstrumentor().instrument()
-
         self.assertTrue(mock_register.called)
 
     def test_started(self):
@@ -59,13 +58,13 @@ class TestPymongo(TestBase):
         # pylint: disable=protected-access
         span = command_tracer._pop_span(mock_event)
         self.assertIs(span.kind, trace_api.SpanKind.CLIENT)
-        self.assertEqual(span.name, "command_name.find")
+        self.assertEqual(span.name, "database_name.command_name")
         self.assertEqual(span.attributes[SpanAttributes.DB_SYSTEM], "mongodb")
         self.assertEqual(
             span.attributes[SpanAttributes.DB_NAME], "database_name"
         )
         self.assertEqual(
-            span.attributes[SpanAttributes.DB_STATEMENT], "command_name find"
+            span.attributes[SpanAttributes.DB_STATEMENT], "command_name"
         )
         self.assertEqual(
             span.attributes[SpanAttributes.NET_PEER_NAME], "test.com"
@@ -189,8 +188,18 @@ class TestPymongo(TestBase):
 
         self.assertEqual(len(spans_list), 1)
         span = spans_list[0]
+        self.assertEqual(span.name, "database_name.command_name")
 
-        self.assertEqual(span.name, "command_name.123")
+    def test_no_op_tracer(self):
+        mock_event = MockEvent({})
+
+        tracer = trace_api.NoOpTracer()
+        command_tracer = CommandTracer(tracer)
+        command_tracer.started(event=mock_event)
+        command_tracer.succeeded(event=mock_event)
+
+        spans_list = self.memory_exporter.get_finished_spans()
+        self.assertEqual(len(spans_list), 0)
 
 
 class MockCommand:

@@ -23,6 +23,7 @@ from django.http import HttpRequest, HttpResponse
 from django.test import SimpleTestCase
 from django.test.utils import setup_test_environment, teardown_test_environment
 
+from opentelemetry import trace as trace_api
 from opentelemetry.instrumentation.django import (
     DjangoInstrumentor,
     _DjangoMiddleware,
@@ -43,6 +44,7 @@ from opentelemetry.trace import (
     format_trace_id,
 )
 from opentelemetry.util.http import (
+    OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SANITIZE_FIELDS,
     OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST,
     OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE,
     get_excluded_urls,
@@ -135,7 +137,7 @@ class TestMiddlewareAsgi(SimpleTestCase, TestBase):
 
         span = spans[0]
 
-        self.assertEqual(span.name, "^route/(?P<year>[0-9]{4})/template/$")
+        self.assertEqual(span.name, "GET ^route/(?P<year>[0-9]{4})/template/$")
         self.assertEqual(span.kind, SpanKind.SERVER)
         self.assertEqual(span.status.status_code, StatusCode.UNSET)
         self.assertEqual(span.attributes[SpanAttributes.HTTP_METHOD], "GET")
@@ -158,7 +160,7 @@ class TestMiddlewareAsgi(SimpleTestCase, TestBase):
 
         span = spans[0]
 
-        self.assertEqual(span.name, "^traced/")
+        self.assertEqual(span.name, "GET ^traced/")
         self.assertEqual(span.kind, SpanKind.SERVER)
         self.assertEqual(span.status.status_code, StatusCode.UNSET)
         self.assertEqual(span.attributes[SpanAttributes.HTTP_METHOD], "GET")
@@ -193,7 +195,7 @@ class TestMiddlewareAsgi(SimpleTestCase, TestBase):
 
         span = spans[0]
 
-        self.assertEqual(span.name, "^traced/")
+        self.assertEqual(span.name, "POST ^traced/")
         self.assertEqual(span.kind, SpanKind.SERVER)
         self.assertEqual(span.status.status_code, StatusCode.UNSET)
         self.assertEqual(span.attributes[SpanAttributes.HTTP_METHOD], "POST")
@@ -216,7 +218,7 @@ class TestMiddlewareAsgi(SimpleTestCase, TestBase):
 
         span = spans[0]
 
-        self.assertEqual(span.name, "^error/")
+        self.assertEqual(span.name, "GET ^error/")
         self.assertEqual(span.kind, SpanKind.SERVER)
         self.assertEqual(span.status.status_code, StatusCode.ERROR)
         self.assertEqual(span.attributes[SpanAttributes.HTTP_METHOD], "GET")
@@ -262,7 +264,7 @@ class TestMiddlewareAsgi(SimpleTestCase, TestBase):
         self.assertEqual(len(span_list), 1)
 
         span = span_list[0]
-        self.assertEqual(span.name, "^span_name/([0-9]{4})/$")
+        self.assertEqual(span.name, "GET ^span_name/([0-9]{4})/$")
 
     async def test_span_name_for_query_string(self):
         """
@@ -273,7 +275,7 @@ class TestMiddlewareAsgi(SimpleTestCase, TestBase):
         self.assertEqual(len(span_list), 1)
 
         span = span_list[0]
-        self.assertEqual(span.name, "^span_name/([0-9]{4})/$")
+        self.assertEqual(span.name, "GET ^span_name/([0-9]{4})/$")
 
     async def test_span_name_404(self):
         await self.async_client.get("/span_name/1234567890/")
@@ -281,7 +283,7 @@ class TestMiddlewareAsgi(SimpleTestCase, TestBase):
         self.assertEqual(len(span_list), 1)
 
         span = span_list[0]
-        self.assertEqual(span.name, "HTTP GET")
+        self.assertEqual(span.name, "GET")
 
     async def test_traced_request_attrs(self):
         await self.async_client.get("/span_name/1234/", CONTENT_TYPE="test/ct")
@@ -423,7 +425,25 @@ class TestMiddlewareAsgiWithTracerProvider(SimpleTestCase, TestBase):
             span.resource.attributes["resource-key"], "resource-value"
         )
 
+    async def test_no_op_tracer_provider(self):
+        _django_instrumentor.uninstrument()
+        _django_instrumentor.instrument(
+            tracer_provider=trace_api.NoOpTracerProvider()
+        )
 
+        await self.async_client.post("/traced/")
+        spans = self.exporter.get_finished_spans()
+        self.assertEqual(len(spans), 0)
+
+
+@patch.dict(
+    "os.environ",
+    {
+        OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SANITIZE_FIELDS: ".*my-secret.*",
+        OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST: "Custom-Test-Header-1,Custom-Test-Header-2,Custom-Test-Header-3,Regex-Test-Header-.*,Regex-Invalid-Test-Header-.*,.*my-secret.*",
+        OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE: "Custom-Test-Header-1,Custom-Test-Header-2,Custom-Test-Header-3,my-custom-regex-header-.*,invalid-regex-header-.*,.*my-secret.*",
+    },
+)
 class TestMiddlewareAsgiWithCustomHeaders(SimpleTestCase, TestBase):
     @classmethod
     def setUpClass(cls):
@@ -437,18 +457,9 @@ class TestMiddlewareAsgiWithCustomHeaders(SimpleTestCase, TestBase):
         tracer_provider, exporter = self.create_tracer_provider()
         self.exporter = exporter
         _django_instrumentor.instrument(tracer_provider=tracer_provider)
-        self.env_patch = patch.dict(
-            "os.environ",
-            {
-                OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST: "Custom-Test-Header-1,Custom-Test-Header-2,Custom-Test-Header-3",
-                OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE: "Custom-Test-Header-1,Custom-Test-Header-2,Custom-Test-Header-3",
-            },
-        )
-        self.env_patch.start()
 
     def tearDown(self):
         super().tearDown()
-        self.env_patch.stop()
         teardown_test_environment()
         _django_instrumentor.uninstrument()
 
@@ -465,12 +476,20 @@ class TestMiddlewareAsgiWithCustomHeaders(SimpleTestCase, TestBase):
             "http.request.header.custom_test_header_2": (
                 "test-header-value-2",
             ),
+            "http.request.header.regex_test_header_1": ("Regex Test Value 1",),
+            "http.request.header.regex_test_header_2": (
+                "RegexTestValue2,RegexTestValue3",
+            ),
+            "http.request.header.my_secret_header": ("[REDACTED]",),
         }
         await self.async_client.get(
             "/traced/",
             **{
                 "custom-test-header-1": "test-header-value-1",
                 "custom-test-header-2": "test-header-value-2",
+                "Regex-Test-Header-1": "Regex Test Value 1",
+                "regex-test-header-2": "RegexTestValue2,RegexTestValue3",
+                "My-Secret-Header": "My Secret Value",
             },
         )
         spans = self.exporter.get_finished_spans()
@@ -510,6 +529,13 @@ class TestMiddlewareAsgiWithCustomHeaders(SimpleTestCase, TestBase):
             "http.response.header.custom_test_header_2": (
                 "test-header-value-2",
             ),
+            "http.response.header.my_custom_regex_header_1": (
+                "my-custom-regex-value-1,my-custom-regex-value-2",
+            ),
+            "http.response.header.my_custom_regex_header_2": (
+                "my-custom-regex-value-3,my-custom-regex-value-4",
+            ),
+            "http.response.header.my_secret_header": ("[REDACTED]",),
         }
         await self.async_client.get("/traced_custom_header/")
         spans = self.exporter.get_finished_spans()

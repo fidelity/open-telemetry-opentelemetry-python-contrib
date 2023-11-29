@@ -147,7 +147,7 @@ class TestBotoInstrumentor(TestBase):
         self.assertEqual(span.attributes["aws.operation"], "head_bucket")
         self.assertEqual(span.name, "s3.command")
 
-        # Checking for resource incase of error
+        # Checking for resource in case of error
         try:
             s3.get_bucket("big_bucket")
         except Exception:  # pylint: disable=broad-except
@@ -187,7 +187,6 @@ class TestBotoInstrumentor(TestBase):
 
     @mock_lambda_deprecated
     def test_unpatch(self):
-
         lamb = boto.awslambda.connect_to_region("us-east-2")
 
         BotoInstrumentor().uninstrument()
@@ -209,6 +208,22 @@ class TestBotoInstrumentor(TestBase):
         spans = self.memory_exporter.get_finished_spans()
         assert spans
         self.assertEqual(len(spans), 1)
+
+    @mock_s3_deprecated
+    def test_uninstrument(self):
+        s3 = boto.s3.connect_to_region("us-east-1")
+        # Get the created bucket
+        s3.create_bucket("cheese")
+        spans = self.memory_exporter.get_finished_spans()
+        assert spans
+        self.assertEqual(len(spans), 1)
+
+        self.memory_exporter.clear()
+        BotoInstrumentor().uninstrument()
+
+        s3.get_bucket("cheese")
+        spans = self.memory_exporter.get_finished_spans()
+        self.assertEqual(len(spans), 0)
 
     @mock_lambda_deprecated
     def test_lambda_client(self):

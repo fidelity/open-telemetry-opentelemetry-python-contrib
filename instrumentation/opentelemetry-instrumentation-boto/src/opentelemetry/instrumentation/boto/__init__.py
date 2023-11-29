@@ -86,12 +86,15 @@ class BotoInstrumentor(BaseInstrumentor):
     def _instrument(self, **kwargs):
         # AWSQueryConnection and AWSAuthConnection are two different classes
         # called by different services for connection.
-        # For exemple EC2 uses AWSQueryConnection and S3 uses
+        # For example EC2 uses AWSQueryConnection and S3 uses
         # AWSAuthConnection
 
         # pylint: disable=attribute-defined-outside-init
         self._tracer = get_tracer(
-            __name__, __version__, kwargs.get("tracer_provider")
+            __name__,
+            __version__,
+            kwargs.get("tracer_provider"),
+            schema_url="https://opentelemetry.io/schemas/1.11.0",
         )
 
         wrap_function_wrapper(
@@ -119,7 +122,6 @@ class BotoInstrumentor(BaseInstrumentor):
         args,
         kwargs,
     ):
-
         endpoint_name = getattr(instance, "host").split(".")[0]
 
         with self._tracer.start_as_current_span(
@@ -166,7 +168,6 @@ class BotoInstrumentor(BaseInstrumentor):
             return result
 
     def _patched_query_request(self, original_func, instance, args, kwargs):
-
         return self._common_request(
             ("operation_name", "params", "path", "verb"),
             ["operation_name", "params", "path"],
@@ -178,8 +179,6 @@ class BotoInstrumentor(BaseInstrumentor):
         )
 
     def _patched_auth_request(self, original_func, instance, args, kwargs):
-        operation_name = None
-
         frame = currentframe().f_back
         operation_name = None
         while frame:

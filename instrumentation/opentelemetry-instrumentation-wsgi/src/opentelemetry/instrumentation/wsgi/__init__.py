@@ -85,8 +85,15 @@ Configuration
 Request/Response hooks
 **********************
 
-Utilize request/reponse hooks to execute custom logic to be performed before/after performing a request. Environ is an instance of WSGIEnvironment.
-Response_headers is a list of key-value (tuples) representing the response headers returned from the response.
+This instrumentation supports request and response hooks. These are functions that get called
+right after a span is created for a request and right before the span is finished for the response.
+
+- The client request hook is called with the internal span and an instance of WSGIEnvironment when the method
+  ``receive`` is called.
+- The client response hook is called with the internal span, the status of the response and a list of key-value (tuples)
+  representing the response headers returned from the response when the method ``send`` is called.
+
+For example,
 
 .. code-block:: python
 
@@ -102,54 +109,99 @@ Response_headers is a list of key-value (tuples) representing the response heade
 
 Capture HTTP request and response headers
 *****************************************
-You can configure the agent to capture predefined HTTP headers as span attributes, according to the `semantic convention <https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/semantic_conventions/http.md#http-request-and-response-headers>`_.
+You can configure the agent to capture specified HTTP headers as span attributes, according to the
+`semantic convention <https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/semantic_conventions/http.md#http-request-and-response-headers>`_.
 
 Request headers
 ***************
-To capture predefined HTTP request headers as span attributes, set the environment variable ``OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST``
-to a comma-separated list of HTTP header names.
+To capture HTTP request headers as span attributes, set the environment variable
+``OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST`` to a comma delimited list of HTTP header names.
 
 For example,
-
 ::
 
     export OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST="content-type,custom_request_header"
 
-will extract ``content-type`` and ``custom_request_header`` from request headers and add them as span attributes.
+will extract ``content-type`` and ``custom_request_header`` from the request headers and add them as span attributes.
 
-It is recommended that you should give the correct names of the headers to be captured in the environment variable.
-Request header names in wsgi are case insensitive and - characters are replaced by _. So, giving header name as ``CUStom_Header`` in environment variable will be able capture header with name ``custom-header``.
+Request header names in WSGI are case-insensitive and ``-`` characters are replaced by ``_``. So, giving the header
+name as ``CUStom_Header`` in the environment variable will capture the header named ``custom-header``.
 
-The name of the added span attribute will follow the format ``http.request.header.<header_name>`` where ``<header_name>`` being the normalized HTTP header name (lowercase, with - characters replaced by _ ).
-The value of the attribute will be single item list containing all the header values.
+Regular expressions may also be used to match multiple headers that correspond to the given pattern.  For example:
+::
 
-Example of the added span attribute,
+    export OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST="Accept.*,X-.*"
+
+Would match all request headers that start with ``Accept`` and ``X-``.
+
+To capture all request headers, set ``OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST`` to ``".*"``.
+::
+
+    export OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST=".*"
+
+The name of the added span attribute will follow the format ``http.request.header.<header_name>`` where ``<header_name>``
+is the normalized HTTP header name (lowercase, with ``-`` replaced by ``_``). The value of the attribute will be a
+single item list containing all the header values.
+
+For example:
 ``http.request.header.custom_request_header = ["<value1>,<value2>"]``
 
 Response headers
 ****************
-To capture predefined HTTP response headers as span attributes, set the environment variable ``OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE``
-to a comma-separated list of HTTP header names.
+To capture HTTP response headers as span attributes, set the environment variable
+``OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE`` to a comma delimited list of HTTP header names.
 
 For example,
-
 ::
 
     export OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE="content-type,custom_response_header"
 
-will extract ``content-type`` and ``custom_response_header`` from response headers and add them as span attributes.
+will extract ``content-type`` and ``custom_response_header`` from the response headers and add them as span attributes.
 
-It is recommended that you should give the correct names of the headers to be captured in the environment variable.
-Response header names captured in wsgi are case insensitive. So, giving header name as ``CUStomHeader`` in environment variable will be able capture header with name ``customheader``.
+Response header names in WSGI are case-insensitive. So, giving the header name as ``CUStom-Header`` in the environment
+variable will capture the header named ``custom-header``.
 
-The name of the added span attribute will follow the format ``http.response.header.<header_name>`` where ``<header_name>`` being the normalized HTTP header name (lowercase, with - characters replaced by _ ).
-The value of the attribute will be single item list containing all the header values.
+Regular expressions may also be used to match multiple headers that correspond to the given pattern.  For example:
+::
 
-Example of the added span attribute,
+    export OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE="Content.*,X-.*"
+
+Would match all response headers that start with ``Content`` and ``X-``.
+
+To capture all response headers, set ``OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE`` to ``".*"``.
+::
+
+    export OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE=".*"
+
+The name of the added span attribute will follow the format ``http.response.header.<header_name>`` where ``<header_name>``
+is the normalized HTTP header name (lowercase, with ``-`` replaced by ``_``). The value of the attribute will be a
+single item list containing all the header values.
+
+For example:
 ``http.response.header.custom_response_header = ["<value1>,<value2>"]``
 
+Sanitizing headers
+******************
+In order to prevent storing sensitive data such as personally identifiable information (PII), session keys, passwords,
+etc, set the environment variable ``OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SANITIZE_FIELDS``
+to a comma delimited list of HTTP header names to be sanitized.  Regexes may be used, and all header names will be
+matched in a case-insensitive manner.
+
+For example,
+::
+
+    export OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SANITIZE_FIELDS=".*session.*,set-cookie"
+
+will replace the value of headers such as ``session-id`` and ``set-cookie`` with ``[REDACTED]`` in the span.
+
 Note:
-    Environment variable names to capture http headers are still experimental, and thus are subject to change.
+    The environment variable names used to capture HTTP headers are still experimental, and thus are subject to change.
+
+Sanitizing methods
+******************
+In order to prevent unbound cardinality for HTTP methods by default nonstandard ones are labeled as ``NONSTANDARD``.
+To record all of the names set the environment variable  ``OTEL_PYTHON_INSTRUMENTATION_HTTP_CAPTURE_ALL_METHODS``
+to a value that evaluates to true, e.g. ``1``.
 
 API
 ---
@@ -168,15 +220,19 @@ from opentelemetry.instrumentation.utils import (
 from opentelemetry.instrumentation.wsgi.version import __version__
 from opentelemetry.metrics import get_meter
 from opentelemetry.propagators.textmap import Getter
+from opentelemetry.semconv.metrics import MetricInstruments
 from opentelemetry.semconv.trace import SpanAttributes
 from opentelemetry.trace.status import Status, StatusCode
 from opentelemetry.util.http import (
+    OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SANITIZE_FIELDS,
     OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST,
     OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE,
+    SanitizeValue,
     get_custom_headers,
     normalise_request_header_name,
     normalise_response_header_name,
     remove_url_credentials,
+    sanitize_method,
 )
 
 _HTTP_VERSION_PREFIX = "HTTP/"
@@ -242,10 +298,13 @@ def setifnotnone(dic, key, value):
 
 def collect_request_attributes(environ):
     """Collects HTTP request attributes from the PEP3333-conforming
-    WSGI environ and returns a dictionary to be used as span creation attributes."""
+    WSGI environ and returns a dictionary to be used as span creation attributes.
+    """
 
     result = {
-        SpanAttributes.HTTP_METHOD: environ.get("REQUEST_METHOD"),
+        SpanAttributes.HTTP_METHOD: sanitize_method(
+            environ.get("REQUEST_METHOD")
+        ),
         SpanAttributes.HTTP_SERVER_NAME: environ.get("SERVER_NAME"),
         SpanAttributes.HTTP_SCHEME: environ.get("wsgi.url_scheme"),
     }
@@ -291,39 +350,52 @@ def collect_request_attributes(environ):
 def collect_custom_request_headers_attributes(environ):
     """Returns custom HTTP request headers which are configured by the user
     from the PEP3333-conforming WSGI environ to be used as span creation attributes as described
-    in the specification https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/semantic_conventions/http.md#http-request-and-response-headers"""
-    attributes = {}
-    custom_request_headers_name = get_custom_headers(
-        OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST
+    in the specification https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/semantic_conventions/http.md#http-request-and-response-headers
+    """
+
+    sanitize = SanitizeValue(
+        get_custom_headers(
+            OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SANITIZE_FIELDS
+        )
     )
-    for header_name in custom_request_headers_name:
-        wsgi_env_var = header_name.upper().replace("-", "_")
-        header_values = environ.get(f"HTTP_{wsgi_env_var}")
-        if header_values:
-            key = normalise_request_header_name(header_name)
-            attributes[key] = [header_values]
-    return attributes
+
+    headers = {
+        key[_CARRIER_KEY_PREFIX_LEN:].replace("_", "-"): val
+        for key, val in environ.items()
+        if key.startswith(_CARRIER_KEY_PREFIX)
+    }
+
+    return sanitize.sanitize_header_values(
+        headers,
+        get_custom_headers(
+            OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST
+        ),
+        normalise_request_header_name,
+    )
 
 
 def collect_custom_response_headers_attributes(response_headers):
     """Returns custom HTTP response headers which are configured by the user from the
     PEP3333-conforming WSGI environ as described in the specification
-    https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/semantic_conventions/http.md#http-request-and-response-headers"""
-    attributes = {}
-    custom_response_headers_name = get_custom_headers(
-        OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE
+    https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/semantic_conventions/http.md#http-request-and-response-headers
+    """
+
+    sanitize = SanitizeValue(
+        get_custom_headers(
+            OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SANITIZE_FIELDS
+        )
     )
     response_headers_dict = {}
     if response_headers:
-        for header_name, header_value in response_headers:
-            response_headers_dict[header_name.lower()] = header_value
+        response_headers_dict = dict(response_headers)
 
-    for header_name in custom_response_headers_name:
-        header_values = response_headers_dict.get(header_name.lower())
-        if header_values:
-            key = normalise_response_header_name(header_name)
-            attributes[key] = [header_values]
-    return attributes
+    return sanitize.sanitize_header_values(
+        response_headers_dict,
+        get_custom_headers(
+            OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE
+        ),
+        normalise_response_header_name,
+    )
 
 
 def _parse_status_code(resp_status):
@@ -354,7 +426,8 @@ def add_response_attributes(
     span, start_response_status, response_headers
 ):  # pylint: disable=unused-argument
     """Adds HTTP response attributes to span using the arguments
-    passed to a PEP3333-conforming start_response callable."""
+    passed to a PEP3333-conforming start_response callable.
+    """
     if not span.is_recording():
         return
     status_code, _ = start_response_status.split(" ", 1)
@@ -376,8 +449,21 @@ def add_response_attributes(
 
 
 def get_default_span_name(environ):
-    """Default implementation for name_callback, returns HTTP {METHOD_NAME}."""
-    return f"HTTP {environ.get('REQUEST_METHOD', '')}".strip()
+    """
+    Default span name is the HTTP method and URL path, or just the method.
+    https://github.com/open-telemetry/opentelemetry-specification/pull/3165
+    https://opentelemetry.io/docs/reference/specification/trace/semantic_conventions/http/#name
+
+    Args:
+        environ: The WSGI environ object.
+    Returns:
+        The span name.
+    """
+    method = sanitize_method(environ.get("REQUEST_METHOD", "").strip())
+    path = environ.get("PATH_INFO", "").strip()
+    if method and path:
+        return f"{method} {path}"
+    return method
 
 
 class OpenTelemetryMiddleware:
@@ -406,15 +492,25 @@ class OpenTelemetryMiddleware:
         meter_provider=None,
     ):
         self.wsgi = wsgi
-        self.tracer = trace.get_tracer(__name__, __version__, tracer_provider)
-        self.meter = get_meter(__name__, __version__, meter_provider)
+        self.tracer = trace.get_tracer(
+            __name__,
+            __version__,
+            tracer_provider,
+            schema_url="https://opentelemetry.io/schemas/1.11.0",
+        )
+        self.meter = get_meter(
+            __name__,
+            __version__,
+            meter_provider,
+            schema_url="https://opentelemetry.io/schemas/1.11.0",
+        )
         self.duration_histogram = self.meter.create_histogram(
-            name="http.server.duration",
+            name=MetricInstruments.HTTP_SERVER_DURATION,
             unit="ms",
             description="measures the duration of the inbound HTTP request",
         )
         self.active_requests_counter = self.meter.create_up_down_counter(
-            name="http.server.active_requests",
+            name=MetricInstruments.HTTP_SERVER_ACTIVE_REQUESTS,
             unit="requests",
             description="measures the number of concurrent HTTP requests that are currently in-flight",
         )

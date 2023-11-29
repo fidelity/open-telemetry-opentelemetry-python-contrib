@@ -59,7 +59,7 @@ Configuration
 Request/Response hooks
 **********************
 
-Utilize request/reponse hooks to execute custom logic to be performed before/after performing a request.
+Utilize request/response hooks to execute custom logic to be performed before/after performing a request.
 
 .. code-block:: python
 
@@ -163,7 +163,12 @@ def create_trace_config(
     # Explicitly specify the type for the `request_hook` and `response_hook` param and rtype to work
     # around this issue.
 
-    tracer = get_tracer(__name__, __version__, tracer_provider)
+    tracer = get_tracer(
+        __name__,
+        __version__,
+        tracer_provider,
+        schema_url="https://opentelemetry.io/schemas/1.11.0",
+    )
 
     def _end_trace(trace_config_ctx: types.SimpleNamespace):
         context_api.detach(trace_config_ctx.token)
@@ -179,7 +184,7 @@ def create_trace_config(
             return
 
         http_method = params.method.upper()
-        request_span_name = f"HTTP {http_method}"
+        request_span_name = f"{http_method}"
         request_url = (
             remove_url_credentials(trace_config_ctx.url_filter(params.url))
             if callable(trace_config_ctx.url_filter)
@@ -232,12 +237,13 @@ def create_trace_config(
         if trace_config_ctx.span is None:
             return
 
-        if callable(response_hook):
-            response_hook(trace_config_ctx.span, params)
-
         if trace_config_ctx.span.is_recording() and params.exception:
             trace_config_ctx.span.set_status(Status(StatusCode.ERROR))
             trace_config_ctx.span.record_exception(params.exception)
+
+        if callable(response_hook):
+            response_hook(trace_config_ctx.span, params)
+
         _end_trace(trace_config_ctx)
 
     def _trace_config_ctx_factory(**kwargs):
@@ -262,7 +268,9 @@ def _instrument(
     url_filter: _UrlFilterT = None,
     request_hook: _RequestHookT = None,
     response_hook: _ResponseHookT = None,
-    trace_configs: typing.Optional[aiohttp.TraceConfig] = None,
+    trace_configs: typing.Optional[
+        typing.Sequence[aiohttp.TraceConfig]
+    ] = None,
 ):
     """Enables tracing of all ClientSessions
 
@@ -270,16 +278,15 @@ def _instrument(
     the session's trace_configs.
     """
 
-    if trace_configs is None:
-        trace_configs = []
+    trace_configs = trace_configs or ()
 
     # pylint:disable=unused-argument
     def instrumented_init(wrapped, instance, args, kwargs):
         if context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY):
             return wrapped(*args, **kwargs)
 
-        if kwargs.get("trace_configs"):
-            trace_configs.extend(kwargs.get("trace_configs"))
+        client_trace_configs = list(kwargs.get("trace_configs") or [])
+        client_trace_configs.extend(trace_configs)
 
         trace_config = create_trace_config(
             url_filter=url_filter,
@@ -288,9 +295,9 @@ def _instrument(
             tracer_provider=tracer_provider,
         )
         trace_config._is_instrumented_by_opentelemetry = True
-        trace_configs.append(trace_config)
+        client_trace_configs.append(trace_config)
 
-        kwargs["trace_configs"] = trace_configs
+        kwargs["trace_configs"] = client_trace_configs
         return wrapped(*args, **kwargs)
 
     wrapt.wrap_function_wrapper(

@@ -18,11 +18,14 @@ This package provides a couple of commands that help automatically instruments a
 
 .. note::
     You need to install a distro package to get auto instrumentation working. The ``opentelemetry-distro``
-    package contains the default distro and automatically configures some of the common options for users.
+    package contains the default distro and configurator and automatically configures some of the common options for users.
     For more info about ``opentelemetry-distro`` check `here <https://opentelemetry-python.readthedocs.io/en/latest/examples/distro/README.html>`__
     ::
 
         pip install opentelemetry-distro[otlp]
+
+    When creating a custom distro and/or configurator, be sure to add entry points for each under `opentelemetry_distro` and `opentelemetry_configurator` respectfully.
+    If you have entry points for multiple distros or configurators present in your environment, you should specify the entry point name of the distro and configurator you want to be used via the `OTEL_PYTHON_DISTRO` and `OTEL_PYTHON_CONFIGURATOR` environment variables.
 
 
 opentelemetry-bootstrap
@@ -51,12 +54,15 @@ and when possible, apply automatic tracing instrumentation on them. This means y
 will get automatic distributed tracing for free without having to make any code changes
 at all. This will also configure a global tracer and tracing exporter without you having to
 make any code changes. By default, the instrument command will use the OTLP exporter but
-this can be overriden when needed.
+this can be overridden when needed.
 
 The command supports the following configuration options as CLI arguments and environment vars:
 
 
 * ``--traces_exporter`` or ``OTEL_TRACES_EXPORTER``
+* ``--metrics_exporter`` or ``OTEL_METRICS_EXPORTER``
+* ``--distro`` or ``OTEL_PYTHON_DISTRO``
+* ``--configurator`` or ``OTEL_PYTHON_CONFIGURATOR``
 
 Used to specify which trace exporter to use. Can be set to one or more of the well-known exporter
 names (see below).
@@ -71,13 +77,14 @@ Well known trace exporter names:
     - jaeger_proto
     - jaeger_thrift
     - opencensus
-    - otlp
-    - otlp_proto_grpc
-    - otlp_proto_http
     - zipkin_json
     - zipkin_proto
+    - otlp
+    - otlp_proto_grpc (`deprecated`)
+    - otlp_proto_http (`deprecated`)
 
-``otlp`` is an alias for ``otlp_proto_grpc``.
+Note: The default transport protocol for ``otlp`` is gRPC.
+HTTP is currently supported for traces only, and should be set using ``OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf``
 
 * ``--id-generator`` or ``OTEL_PYTHON_ID_GENERATOR``
 

@@ -39,14 +39,15 @@ API
 
 import functools
 import logging
+import re
 import typing
 
 import wrapt
 
 from opentelemetry import trace as trace_api
 from opentelemetry.instrumentation.dbapi.version import __version__
+from opentelemetry.instrumentation.sqlcommenter_utils import _add_sql_comment
 from opentelemetry.instrumentation.utils import (
-    _add_sql_comment,
     _get_opentelemetry_values,
     unwrap,
 )
@@ -79,6 +80,9 @@ def trace_integration(
         tracer_provider: The :class:`opentelemetry.trace.TracerProvider` to
             use. If omitted the current configured one is used.
         capture_parameters: Configure if db.statement.parameters should be captured.
+        enable_commenter: Flag to enable/disable sqlcommenter.
+        db_api_integration_factory: The `DatabaseApiIntegration` to use. If none is passed the
+            default one is used.
     """
     wrap_connect(
         __name__,
@@ -121,6 +125,8 @@ def wrap_connect(
             use. If omitted the current configured one is used.
         capture_parameters: Configure if db.statement.parameters should be captured.
         enable_commenter: Flag to enable/disable sqlcommenter.
+        db_api_integration_factory: The `DatabaseApiIntegration` to use. If none is passed the
+            default one is used.
         commenter_options: Configurations for tags to be appended at the sql query.
 
     """
@@ -224,8 +230,8 @@ def uninstrument_connection(connection):
     Returns:
         An uninstrumented connection.
     """
-    if isinstance(connection, _TracedConnectionProxy):
-        return connection._connection
+    if isinstance(connection, wrapt.ObjectProxy):
+        return connection.__wrapped__
 
     _logger.warning("Connection is not instrumented")
     return connection
@@ -258,6 +264,7 @@ class DatabaseApiIntegration:
             self._name,
             instrumenting_library_version=self._version,
             tracer_provider=tracer_provider,
+            schema_url="https://opentelemetry.io/schemas/1.11.0",
         )
         self.capture_parameters = capture_parameters
         self.enable_commenter = enable_commenter
@@ -314,35 +321,36 @@ class DatabaseApiIntegration:
             self.span_attributes[SpanAttributes.NET_PEER_PORT] = port
 
 
-class _TracedConnectionProxy:
-    pass
-
-
 def get_traced_connection_proxy(
     connection, db_api_integration, *args, **kwargs
 ):
     # pylint: disable=abstract-method
-    class TracedConnectionProxy(type(connection), _TracedConnectionProxy):
-        def __init__(self, connection):
-            self._connection = connection
+    class TracedConnectionProxy(wrapt.ObjectProxy):
+        # pylint: disable=unused-argument
+        def __init__(self, connection, *args, **kwargs):
+            wrapt.ObjectProxy.__init__(self, connection)
 
-        def __getattr__(self, name):
+        def __getattribute__(self, name):
+            if object.__getattribute__(self, name):
+                return object.__getattribute__(self, name)
+
             return object.__getattribute__(
                 object.__getattribute__(self, "_connection"), name
             )
 
         def cursor(self, *args, **kwargs):
             return get_traced_cursor_proxy(
-                self._connection.cursor(*args, **kwargs), db_api_integration
+                self.__wrapped__.cursor(*args, **kwargs), db_api_integration
             )
 
-        # For some reason this is necessary as trying to access the close
-        # method of self._connection via __getattr__ leads to unexplained
-        # errors.
-        def close(self):
-            self._connection.close()
+        def __enter__(self):
+            self.__wrapped__.__enter__()
+            return self
 
-    return TracedConnectionProxy(connection)
+        def __exit__(self, *args, **kwargs):
+            self.__wrapped__.__exit__(*args, **kwargs)
+
+    return TracedConnectionProxy(connection, *args, **kwargs)
 
 
 class CursorTracer:
@@ -355,6 +363,7 @@ class CursorTracer:
             else {}
         )
         self._connect_module = self._db_api_integration.connect_module
+        self._leading_comment_remover = re.compile(r"^/\*.*?\*/")
 
     def _populate_span(
         self,
@@ -384,7 +393,8 @@ class CursorTracer:
 
     def get_operation_name(self, cursor, args):  # pylint: disable=no-self-use
         if args and isinstance(args[0], str):
-            return args[0].split()[0]
+            # Strip leading comments so we get the operation name.
+            return self._leading_comment_remover.sub("", args[0]).split()[0]
         return ""
 
     def get_statement(self, cursor, args):  # pylint: disable=no-self-use
@@ -417,14 +427,14 @@ class CursorTracer:
             if args and self._commenter_enabled:
                 try:
                     args_list = list(args)
-                    commenter_data = dict(
+                    commenter_data = {
                         # Psycopg2/framework information
-                        db_driver=f"psycopg2:{self._connect_module.__version__.split(' ')[0]}",
-                        dbapi_threadsafety=self._connect_module.threadsafety,
-                        dbapi_level=self._connect_module.apilevel,
-                        libpq_version=self._connect_module.__libpq_version__,
-                        driver_paramstyle=self._connect_module.paramstyle,
-                    )
+                        "db_driver": f"psycopg2:{self._connect_module.__version__.split(' ')[0]}",
+                        "dbapi_threadsafety": self._connect_module.threadsafety,
+                        "dbapi_level": self._connect_module.apilevel,
+                        "libpq_version": self._connect_module.__libpq_version__,
+                        "driver_paramstyle": self._connect_module.paramstyle,
+                    }
                     if self._commenter_options.get(
                         "opentelemetry_values", True
                     ):
@@ -455,7 +465,6 @@ def get_traced_cursor_proxy(cursor, db_api_integration, *args, **kwargs):
 
     # pylint: disable=abstract-method
     class TracedCursorProxy(wrapt.ObjectProxy):
-
         # pylint: disable=unused-argument
         def __init__(self, cursor, *args, **kwargs):
             wrapt.ObjectProxy.__init__(self, cursor)

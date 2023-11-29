@@ -21,6 +21,9 @@ from abc import ABC, abstractmethod
 from logging import getLogger
 from typing import Collection, Optional
 
+from opentelemetry.instrumentation._semconv import (
+    _OpenTelemetrySemanticConventionStability,
+)
 from opentelemetry.instrumentation.dependencies import (
     DependencyConflict,
     get_dependency_conflicts,
@@ -46,9 +49,8 @@ class BaseInstrumentor(ABC):
     _is_instrumented_by_opentelemetry = False
 
     def __new__(cls, *args, **kwargs):
-
         if cls._instance is None:
-            cls._instance = object.__new__(cls, *args, **kwargs)
+            cls._instance = object.__new__(cls)
 
         return cls._instance
 
@@ -60,7 +62,7 @@ class BaseInstrumentor(ABC):
     def instrumentation_dependencies(self) -> Collection[str]:
         """Return a list of python packages with versions that the will be instrumented.
 
-        The format should be the same as used in requirements.txt or setup.py.
+        The format should be the same as used in requirements.txt or pyproject.toml.
 
         For example, if an instrumentation instruments requests 1.x, this method should look
         like:
@@ -105,6 +107,9 @@ class BaseInstrumentor(ABC):
             if conflict:
                 _LOG.error(conflict)
                 return None
+
+        # initialize semantic conventions opt-in if needed
+        _OpenTelemetrySemanticConventionStability._initialize()
 
         result = self._instrument(  # pylint: disable=assignment-from-no-return
             **kwargs

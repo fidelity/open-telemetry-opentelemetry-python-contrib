@@ -1,6 +1,22 @@
+# Copyright The OpenTelemetry Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# pylint: disable=unnecessary-dunder-call
+
 from unittest import TestCase, mock
 
 from opentelemetry.instrumentation.kafka.utils import (
+    KafkaPropertiesExtractor,
     _create_consumer_span,
     _get_span_name,
     _kafka_getter,
@@ -208,3 +224,28 @@ class TestUtils(TestCase):
             span, record, self.args, self.kwargs
         )
         detach.assert_called_once_with(attach.return_value)
+
+    @mock.patch(
+        "opentelemetry.instrumentation.kafka.utils.KafkaPropertiesExtractor"
+    )
+    def test_kafka_properties_extractor(
+        self,
+        kafka_properties_extractor: mock.MagicMock,
+    ):
+        kafka_properties_extractor._serialize.return_value = None
+        kafka_properties_extractor._partition.return_value = "partition"
+        assert (
+            KafkaPropertiesExtractor.extract_send_partition(
+                kafka_properties_extractor, self.args, self.kwargs
+            )
+            == "partition"
+        )
+        kafka_properties_extractor._wait_on_metadata.side_effect = Exception(
+            "mocked error"
+        )
+        assert (
+            KafkaPropertiesExtractor.extract_send_partition(
+                kafka_properties_extractor, self.args, self.kwargs
+            )
+            is None
+        )

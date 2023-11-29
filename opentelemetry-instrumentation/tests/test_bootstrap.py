@@ -30,14 +30,13 @@ def sample_packages(packages, rate):
 
 
 class TestBootstrap(TestCase):
-
     installed_libraries = {}
     installed_instrumentations = {}
 
     @classmethod
     def setUpClass(cls):
         cls.installed_libraries = sample_packages(
-            [lib["instrumentation"] for lib in libraries.values()], 0.6
+            [lib["instrumentation"] for lib in libraries], 0.6
         )
 
         # treat 50% of sampled packages as pre-installed

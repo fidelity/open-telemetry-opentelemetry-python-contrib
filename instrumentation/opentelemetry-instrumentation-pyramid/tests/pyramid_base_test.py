@@ -15,7 +15,11 @@
 import pyramid.httpexceptions as exc
 from pyramid.response import Response
 from werkzeug.test import Client
-from werkzeug.wrappers import BaseResponse
+
+# opentelemetry-instrumentation-pyramid uses werkzeug==0.16.1 which has
+# werkzeug.wrappers.BaseResponse. This is not the case for newer versions of
+# werkzeug like the one lint uses.
+from werkzeug.wrappers import BaseResponse  # pylint: disable=no-name-in-module
 
 
 class InstrumentationTest:
@@ -40,6 +44,9 @@ class InstrumentationTest:
             "content-type": "text/plain; charset=utf-8",
             "content-length": "7",
             "my-custom-header": "my-custom-value-1,my-custom-header-2",
+            "my-custom-regex-header-1": "my-custom-regex-value-1,my-custom-regex-value-2",
+            "My-Custom-Regex-Header-2": "my-custom-regex-value-3,my-custom-regex-value-4",
+            "my-secret-header": "my-secret-value",
             "dont-capture-me": "test-value",
         }
         return Response("Testing", headers=headers)

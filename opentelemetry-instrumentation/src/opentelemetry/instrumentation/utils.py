@@ -95,7 +95,7 @@ def _start_internal_or_server_span(
 
     Args:
         tracer : tracer in use by given instrumentation library
-        name (string): name of the span
+        span_name (string): name of the span
         start_time : start time of the span
         context_carrier : object which contains values that are
             used to construct a Context. This object
@@ -122,29 +122,6 @@ def _start_internal_or_server_span(
         attributes=attributes,
     )
     return span, token
-
-
-def _generate_sql_comment(**meta) -> str:
-    """
-    Return a SQL comment with comma delimited key=value pairs created from
-    **meta kwargs.
-    """
-    key_value_delimiter = ","
-
-    if not meta:  # No entries added.
-        return ""
-
-    # Sort the keywords to ensure that caching works and that testing is
-    # deterministic. It eases visual inspection as well.
-    return (
-        " /*"
-        + key_value_delimiter.join(
-            f"{_url_quote(key)}={_url_quote(value)!r}"
-            for key, value in sorted(meta.items())
-            if value is not None
-        )
-        + "*/"
-    )
 
 
 def _url_quote(s) -> str:  # pylint: disable=invalid-name
@@ -175,16 +152,3 @@ def _python_path_without_directory(python_path, directory, path_separator):
         "",
         python_path,
     )
-
-
-def _add_sql_comment(sql, **meta) -> str:
-    """
-    Appends comments to the sql statement and returns it
-    """
-    comment = _generate_sql_comment(**meta)
-    sql = sql.rstrip()
-    if sql[-1] == ";":
-        sql = sql[:-1] + comment + ";"
-    else:
-        sql = sql + comment
-    return sql

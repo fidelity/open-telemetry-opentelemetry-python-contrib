@@ -48,6 +48,7 @@ from opentelemetry.trace import (
     format_trace_id,
 )
 from opentelemetry.util.http import (
+    OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SANITIZE_FIELDS,
     OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST,
     OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE,
     _active_requests_count_attrs,
@@ -73,9 +74,13 @@ DJANGO_2_2 = VERSION >= (2, 2)
 DJANGO_3_0 = VERSION >= (3, 0)
 
 if DJANGO_2_0:
-    from django.urls import re_path
+    from django.urls import path, re_path
 else:
     from django.conf.urls import url as re_path
+
+    def path(path_argument, *args, **kwargs):
+        return re_path(rf"^{path_argument}$", *args, **kwargs)
+
 
 urlpatterns = [
     re_path(r"^traced/", traced),
@@ -86,10 +91,12 @@ urlpatterns = [
     re_path(r"^excluded_noarg/", excluded_noarg),
     re_path(r"^excluded_noarg2/", excluded_noarg2),
     re_path(r"^span_name/([0-9]{4})/$", route_span_name),
+    path("", traced, name="empty"),
 ]
 _django_instrumentor = DjangoInstrumentor()
 
 
+# pylint: disable=too-many-public-methods
 class TestMiddleware(WsgiTestBase):
     @classmethod
     def setUpClass(cls):
@@ -148,9 +155,9 @@ class TestMiddleware(WsgiTestBase):
 
         self.assertEqual(
             span.name,
-            "^route/(?P<year>[0-9]{4})/template/$"
+            "GET ^route/(?P<year>[0-9]{4})/template/$"
             if DJANGO_2_2
-            else "tests.views.traced_template",
+            else "GET",
         )
         self.assertEqual(span.kind, SpanKind.SERVER)
         self.assertEqual(span.status.status_code, StatusCode.UNSET)
@@ -175,9 +182,7 @@ class TestMiddleware(WsgiTestBase):
 
         span = spans[0]
 
-        self.assertEqual(
-            span.name, "^traced/" if DJANGO_2_2 else "tests.views.traced"
-        )
+        self.assertEqual(span.name, "GET ^traced/" if DJANGO_2_2 else "GET")
         self.assertEqual(span.kind, SpanKind.SERVER)
         self.assertEqual(span.status.status_code, StatusCode.UNSET)
         self.assertEqual(span.attributes[SpanAttributes.HTTP_METHOD], "GET")
@@ -205,6 +210,16 @@ class TestMiddleware(WsgiTestBase):
             self.assertFalse(mock_span.set_attribute.called)
             self.assertFalse(mock_span.set_status.called)
 
+    def test_empty_path(self):
+        Client().get("/")
+
+        spans = self.memory_exporter.get_finished_spans()
+        self.assertEqual(len(spans), 1)
+
+        span = spans[0]
+
+        self.assertEqual(span.name, "GET empty")
+
     def test_traced_post(self):
         Client().post("/traced/")
 
@@ -213,9 +228,7 @@ class TestMiddleware(WsgiTestBase):
 
         span = spans[0]
 
-        self.assertEqual(
-            span.name, "^traced/" if DJANGO_2_2 else "tests.views.traced"
-        )
+        self.assertEqual(span.name, "POST ^traced/" if DJANGO_2_2 else "POST")
         self.assertEqual(span.kind, SpanKind.SERVER)
         self.assertEqual(span.status.status_code, StatusCode.UNSET)
         self.assertEqual(span.attributes[SpanAttributes.HTTP_METHOD], "POST")
@@ -239,9 +252,7 @@ class TestMiddleware(WsgiTestBase):
 
         span = spans[0]
 
-        self.assertEqual(
-            span.name, "^error/" if DJANGO_2_2 else "tests.views.error"
-        )
+        self.assertEqual(span.name, "GET ^error/" if DJANGO_2_2 else "GET")
         self.assertEqual(span.kind, SpanKind.SERVER)
         self.assertEqual(span.status.status_code, StatusCode.ERROR)
         self.assertEqual(span.attributes[SpanAttributes.HTTP_METHOD], "GET")
@@ -284,6 +295,18 @@ class TestMiddleware(WsgiTestBase):
         span_list = self.memory_exporter.get_finished_spans()
         self.assertEqual(len(span_list), 1)
 
+    def test_exclude_lists_through_instrument(self):
+        _django_instrumentor.uninstrument()
+        _django_instrumentor.instrument(excluded_urls="excluded_explicit")
+        client = Client()
+        client.get("/excluded_explicit")
+        span_list = self.memory_exporter.get_finished_spans()
+        self.assertEqual(len(span_list), 0)
+
+        client.get("/excluded_arg/123")
+        span_list = self.memory_exporter.get_finished_spans()
+        self.assertEqual(len(span_list), 1)
+
     def test_span_name(self):
         # test no query_string
         Client().get("/span_name/1234/")
@@ -293,9 +316,7 @@ class TestMiddleware(WsgiTestBase):
         span = span_list[0]
         self.assertEqual(
             span.name,
-            "^span_name/([0-9]{4})/$"
-            if DJANGO_2_2
-            else "tests.views.route_span_name",
+            "GET ^span_name/([0-9]{4})/$" if DJANGO_2_2 else "GET",
         )
 
     def test_span_name_for_query_string(self):
@@ -309,9 +330,7 @@ class TestMiddleware(WsgiTestBase):
         span = span_list[0]
         self.assertEqual(
             span.name,
-            "^span_name/([0-9]{4})/$"
-            if DJANGO_2_2
-            else "tests.views.route_span_name",
+            "GET ^span_name/([0-9]{4})/$" if DJANGO_2_2 else "GET",
         )
 
     def test_span_name_404(self):
@@ -320,7 +339,7 @@ class TestMiddleware(WsgiTestBase):
         self.assertEqual(len(span_list), 1)
 
         span = span_list[0]
-        self.assertEqual(span.name, "HTTP GET")
+        self.assertEqual(span.name, "GET")
 
     def test_traced_request_attrs(self):
         Client().get("/span_name/1234/", CONTENT_TYPE="test/ct")
@@ -412,6 +431,18 @@ class TestMiddleware(WsgiTestBase):
             self.memory_exporter.get_finished_spans()[0],
         )
         self.memory_exporter.clear()
+
+    def test_uninstrument(self):
+        Client().get("/route/2020/template/")
+        spans = self.memory_exporter.get_finished_spans()
+        self.assertEqual(len(spans), 1)
+
+        self.memory_exporter.clear()
+        _django_instrumentor.uninstrument()
+
+        Client().get("/route/2020/template/")
+        spans = self.memory_exporter.get_finished_spans()
+        self.assertEqual(len(spans), 0)
 
     # pylint: disable=too-many-locals
     def test_wsgi_metrics(self):
@@ -530,6 +561,14 @@ class TestMiddlewareWithTracerProvider(WsgiTestBase):
             )
 
 
+@patch.dict(
+    "os.environ",
+    {
+        OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SANITIZE_FIELDS: ".*my-secret.*",
+        OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST: "Custom-Test-Header-1,Custom-Test-Header-2,Custom-Test-Header-3,Regex-Test-Header-.*,Regex-Invalid-Test-Header-.*,.*my-secret.*",
+        OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE: "Custom-Test-Header-1,Custom-Test-Header-2,Custom-Test-Header-3,my-custom-regex-header-.*,invalid-regex-header-.*,.*my-secret.*",
+    },
+)
 class TestMiddlewareWsgiWithCustomHeaders(WsgiTestBase):
     @classmethod
     def setUpClass(cls):
@@ -542,18 +581,9 @@ class TestMiddlewareWsgiWithCustomHeaders(WsgiTestBase):
         tracer_provider, exporter = self.create_tracer_provider()
         self.exporter = exporter
         _django_instrumentor.instrument(tracer_provider=tracer_provider)
-        self.env_patch = patch.dict(
-            "os.environ",
-            {
-                OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST: "Custom-Test-Header-1,Custom-Test-Header-2,Custom-Test-Header-3",
-                OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE: "Custom-Test-Header-1,Custom-Test-Header-2,Custom-Test-Header-3",
-            },
-        )
-        self.env_patch.start()
 
     def tearDown(self):
         super().tearDown()
-        self.env_patch.stop()
         teardown_test_environment()
         _django_instrumentor.uninstrument()
 
@@ -570,10 +600,18 @@ class TestMiddlewareWsgiWithCustomHeaders(WsgiTestBase):
             "http.request.header.custom_test_header_2": (
                 "test-header-value-2",
             ),
+            "http.request.header.regex_test_header_1": ("Regex Test Value 1",),
+            "http.request.header.regex_test_header_2": (
+                "RegexTestValue2,RegexTestValue3",
+            ),
+            "http.request.header.my_secret_header": ("[REDACTED]",),
         }
         Client(
             HTTP_CUSTOM_TEST_HEADER_1="test-header-value-1",
             HTTP_CUSTOM_TEST_HEADER_2="test-header-value-2",
+            HTTP_REGEX_TEST_HEADER_1="Regex Test Value 1",
+            HTTP_REGEX_TEST_HEADER_2="RegexTestValue2,RegexTestValue3",
+            HTTP_MY_SECRET_HEADER="My Secret Value",
         ).get("/traced/")
         spans = self.exporter.get_finished_spans()
         self.assertEqual(len(spans), 1)
@@ -607,6 +645,13 @@ class TestMiddlewareWsgiWithCustomHeaders(WsgiTestBase):
             "http.response.header.custom_test_header_2": (
                 "test-header-value-2",
             ),
+            "http.response.header.my_custom_regex_header_1": (
+                "my-custom-regex-value-1,my-custom-regex-value-2",
+            ),
+            "http.response.header.my_custom_regex_header_2": (
+                "my-custom-regex-value-3,my-custom-regex-value-4",
+            ),
+            "http.response.header.my_secret_header": ("[REDACTED]",),
         }
         Client().get("/traced_custom_header/")
         spans = self.exporter.get_finished_spans()

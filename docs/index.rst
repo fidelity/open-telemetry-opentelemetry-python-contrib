@@ -33,7 +33,7 @@ Extensions
 
 Visit `OpenTelemetry Registry <https://opentelemetry.io/registry/?s=python>`_ to
 find a lot of related projects like exporters, instrumentation libraries, tracer
-implementations, etc.
+implementations, resource, etc.
 
 Installing Cutting Edge Packages
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -51,15 +51,8 @@ install <https://pip.pypa.io/en/stable/reference/pip_install/#editable-installs>
     pip install -e ./instrumentation/opentelemetry-instrumentation-flask
     pip install -e ./instrumentation/opentelemetry-instrumentation-botocore
     pip install -e ./sdk-extension/opentelemetry-sdk-extension-aws
+    pip install -e ./resource/opentelemetry-resource-detector-container
 
-
-.. toctree::
-    :maxdepth: 2
-    :caption: OpenTelemetry Exporters
-    :name: exporters
-    :glob:
-
-    exporter/**
 
 .. toctree::
     :maxdepth: 2
@@ -92,6 +85,14 @@ install <https://pip.pypa.io/en/stable/reference/pip_install/#editable-installs>
     :glob:
 
     sdk-extension/**
+
+.. toctree::
+    :maxdepth: 2
+    :caption: OpenTelemetry Resource Detectors
+    :name: Resource Detectors
+    :glob:
+
+    resource/**
 
 Indices and tables
 ------------------

@@ -12,14 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+from dataclasses import dataclass
 from importlib import import_module
+from typing import Any, Callable, Dict
 from unittest import mock
+
+from tests.mocks.api_gateway_http_api_event import (
+    MOCK_LAMBDA_API_GATEWAY_HTTP_API_EVENT,
+)
+from tests.mocks.api_gateway_proxy_event import (
+    MOCK_LAMBDA_API_GATEWAY_PROXY_EVENT,
+)
 
 from opentelemetry.environment_variables import OTEL_PROPAGATORS
 from opentelemetry.instrumentation.aws_lambda import (
     _HANDLER,
     _X_AMZN_TRACE_ID,
     OTEL_INSTRUMENTATION_AWS_LAMBDA_FLUSH_TIMEOUT,
+    OTEL_LAMBDA_DISABLE_AWS_CONTEXT_PROPAGATION,
     AwsLambdaInstrumentor,
 )
 from opentelemetry.propagate import get_global_textmap
@@ -30,7 +40,7 @@ from opentelemetry.propagators.aws.aws_xray_propagator import (
 from opentelemetry.semconv.resource import ResourceAttributes
 from opentelemetry.semconv.trace import SpanAttributes
 from opentelemetry.test.test_base import TestBase
-from opentelemetry.trace import SpanKind
+from opentelemetry.trace import NoOpTracerProvider, SpanKind
 from opentelemetry.trace.propagation.tracecontext import (
     TraceContextTextMapPropagator,
 )
@@ -95,7 +105,7 @@ class TestAwsLambdaInstrumentor(TestBase):
         super().setUp()
         self.common_env_patch = mock.patch.dict(
             "os.environ",
-            {_HANDLER: "mocks.lambda_function.handler"},
+            {_HANDLER: "tests.mocks.lambda_function.handler"},
         )
         self.common_env_patch.start()
 
@@ -150,106 +160,150 @@ class TestAwsLambdaInstrumentor(TestBase):
         test_env_patch.stop()
 
     def test_parent_context_from_lambda_event(self):
-        test_env_patch = mock.patch.dict(
-            "os.environ",
-            {
-                **os.environ,
-                # NOT Active Tracing
-                _X_AMZN_TRACE_ID: MOCK_XRAY_TRACE_CONTEXT_NOT_SAMPLED,
-                # NOT using the X-Ray Propagator
-                OTEL_PROPAGATORS: "tracecontext",
-            },
-        )
-        test_env_patch.start()
+        @dataclass
+        class TestCase:
+            name: str
+            custom_extractor: Callable[[Any], None]
+            context: Dict
+            expected_traceid: int
+            expected_parentid: int
+            xray_traceid: str
+            expected_state_value: str = None
+            expected_trace_state_len: int = 0
+            disable_aws_context_propagation: bool = False
+            disable_aws_context_propagation_envvar: str = ""
 
-        AwsLambdaInstrumentor().instrument()
-
-        mock_execute_lambda(
-            {
-                "headers": {
-                    TraceContextTextMapPropagator._TRACEPARENT_HEADER_NAME: MOCK_W3C_TRACE_CONTEXT_SAMPLED,
-                    TraceContextTextMapPropagator._TRACESTATE_HEADER_NAME: f"{MOCK_W3C_TRACE_STATE_KEY}={MOCK_W3C_TRACE_STATE_VALUE},foo=1,bar=2",
-                }
-            }
-        )
-
-        spans = self.memory_exporter.get_finished_spans()
-
-        assert spans
-
-        self.assertEqual(len(spans), 1)
-        span = spans[0]
-        self.assertEqual(span.get_span_context().trace_id, MOCK_W3C_TRACE_ID)
-
-        parent_context = span.parent
-        self.assertEqual(
-            parent_context.trace_id, span.get_span_context().trace_id
-        )
-        self.assertEqual(parent_context.span_id, MOCK_W3C_PARENT_SPAN_ID)
-        self.assertEqual(len(parent_context.trace_state), 3)
-        self.assertEqual(
-            parent_context.trace_state.get(MOCK_W3C_TRACE_STATE_KEY),
-            MOCK_W3C_TRACE_STATE_VALUE,
-        )
-        self.assertTrue(parent_context.is_remote)
-
-        test_env_patch.stop()
-
-    def test_using_custom_extractor(self):
         def custom_event_context_extractor(lambda_event):
             return get_global_textmap().extract(lambda_event["foo"]["headers"])
 
-        test_env_patch = mock.patch.dict(
-            "os.environ",
-            {
-                **os.environ,
-                # NOT Active Tracing
-                _X_AMZN_TRACE_ID: MOCK_XRAY_TRACE_CONTEXT_NOT_SAMPLED,
-                # NOT using the X-Ray Propagator
-                OTEL_PROPAGATORS: "tracecontext",
-            },
-        )
-        test_env_patch.start()
-
-        AwsLambdaInstrumentor().instrument(
-            event_context_extractor=custom_event_context_extractor,
-        )
-
-        mock_execute_lambda(
-            {
-                "foo": {
+        tests = [
+            TestCase(
+                name="no_custom_extractor",
+                custom_extractor=None,
+                context={
                     "headers": {
                         TraceContextTextMapPropagator._TRACEPARENT_HEADER_NAME: MOCK_W3C_TRACE_CONTEXT_SAMPLED,
                         TraceContextTextMapPropagator._TRACESTATE_HEADER_NAME: f"{MOCK_W3C_TRACE_STATE_KEY}={MOCK_W3C_TRACE_STATE_VALUE},foo=1,bar=2",
                     }
-                }
-            }
-        )
+                },
+                expected_traceid=MOCK_W3C_TRACE_ID,
+                expected_parentid=MOCK_W3C_PARENT_SPAN_ID,
+                expected_trace_state_len=3,
+                expected_state_value=MOCK_W3C_TRACE_STATE_VALUE,
+                xray_traceid=MOCK_XRAY_TRACE_CONTEXT_NOT_SAMPLED,
+            ),
+            TestCase(
+                name="custom_extractor_not_sampled_xray",
+                custom_extractor=custom_event_context_extractor,
+                context={
+                    "foo": {
+                        "headers": {
+                            TraceContextTextMapPropagator._TRACEPARENT_HEADER_NAME: MOCK_W3C_TRACE_CONTEXT_SAMPLED,
+                            TraceContextTextMapPropagator._TRACESTATE_HEADER_NAME: f"{MOCK_W3C_TRACE_STATE_KEY}={MOCK_W3C_TRACE_STATE_VALUE},foo=1,bar=2",
+                        }
+                    }
+                },
+                expected_traceid=MOCK_W3C_TRACE_ID,
+                expected_parentid=MOCK_W3C_PARENT_SPAN_ID,
+                expected_trace_state_len=3,
+                expected_state_value=MOCK_W3C_TRACE_STATE_VALUE,
+                xray_traceid=MOCK_XRAY_TRACE_CONTEXT_NOT_SAMPLED,
+            ),
+            TestCase(
+                name="custom_extractor_sampled_xray",
+                custom_extractor=custom_event_context_extractor,
+                context={
+                    "foo": {
+                        "headers": {
+                            TraceContextTextMapPropagator._TRACEPARENT_HEADER_NAME: MOCK_W3C_TRACE_CONTEXT_SAMPLED,
+                            TraceContextTextMapPropagator._TRACESTATE_HEADER_NAME: f"{MOCK_W3C_TRACE_STATE_KEY}={MOCK_W3C_TRACE_STATE_VALUE},foo=1,bar=2",
+                        }
+                    }
+                },
+                expected_traceid=MOCK_XRAY_TRACE_ID,
+                expected_parentid=MOCK_XRAY_PARENT_SPAN_ID,
+                xray_traceid=MOCK_XRAY_TRACE_CONTEXT_SAMPLED,
+            ),
+            TestCase(
+                name="custom_extractor_sampled_xray_disable_aws_propagation",
+                custom_extractor=custom_event_context_extractor,
+                context={
+                    "foo": {
+                        "headers": {
+                            TraceContextTextMapPropagator._TRACEPARENT_HEADER_NAME: MOCK_W3C_TRACE_CONTEXT_SAMPLED,
+                            TraceContextTextMapPropagator._TRACESTATE_HEADER_NAME: f"{MOCK_W3C_TRACE_STATE_KEY}={MOCK_W3C_TRACE_STATE_VALUE},foo=1,bar=2",
+                        }
+                    }
+                },
+                disable_aws_context_propagation=True,
+                expected_traceid=MOCK_W3C_TRACE_ID,
+                expected_parentid=MOCK_W3C_PARENT_SPAN_ID,
+                expected_trace_state_len=3,
+                expected_state_value=MOCK_W3C_TRACE_STATE_VALUE,
+                xray_traceid=MOCK_XRAY_TRACE_CONTEXT_SAMPLED,
+            ),
+            TestCase(
+                name="no_custom_extractor_xray_disable_aws_propagation_via_env_var",
+                custom_extractor=None,
+                context={
+                    "headers": {
+                        TraceContextTextMapPropagator._TRACEPARENT_HEADER_NAME: MOCK_W3C_TRACE_CONTEXT_SAMPLED,
+                        TraceContextTextMapPropagator._TRACESTATE_HEADER_NAME: f"{MOCK_W3C_TRACE_STATE_KEY}={MOCK_W3C_TRACE_STATE_VALUE},foo=1,bar=2",
+                    }
+                },
+                disable_aws_context_propagation=False,
+                disable_aws_context_propagation_envvar="true",
+                expected_traceid=MOCK_W3C_TRACE_ID,
+                expected_parentid=MOCK_W3C_PARENT_SPAN_ID,
+                expected_trace_state_len=3,
+                expected_state_value=MOCK_W3C_TRACE_STATE_VALUE,
+                xray_traceid=MOCK_XRAY_TRACE_CONTEXT_SAMPLED,
+            ),
+        ]
+        for test in tests:
+            test_env_patch = mock.patch.dict(
+                "os.environ",
+                {
+                    **os.environ,
+                    # NOT Active Tracing
+                    _X_AMZN_TRACE_ID: test.xray_traceid,
+                    OTEL_LAMBDA_DISABLE_AWS_CONTEXT_PROPAGATION: test.disable_aws_context_propagation_envvar,
+                    # NOT using the X-Ray Propagator
+                    OTEL_PROPAGATORS: "tracecontext",
+                },
+            )
+            test_env_patch.start()
+            AwsLambdaInstrumentor().instrument(
+                event_context_extractor=test.custom_extractor,
+                disable_aws_context_propagation=test.disable_aws_context_propagation,
+            )
+            mock_execute_lambda(test.context)
+            spans = self.memory_exporter.get_finished_spans()
+            assert spans
+            self.assertEqual(len(spans), 1)
+            span = spans[0]
+            self.assertEqual(
+                span.get_span_context().trace_id, test.expected_traceid
+            )
 
-        spans = self.memory_exporter.get_finished_spans()
-
-        assert spans
-
-        self.assertEqual(len(spans), 1)
-        span = spans[0]
-        self.assertEqual(span.get_span_context().trace_id, MOCK_W3C_TRACE_ID)
-
-        parent_context = span.parent
-        self.assertEqual(
-            parent_context.trace_id, span.get_span_context().trace_id
-        )
-        self.assertEqual(parent_context.span_id, MOCK_W3C_PARENT_SPAN_ID)
-        self.assertEqual(len(parent_context.trace_state), 3)
-        self.assertEqual(
-            parent_context.trace_state.get(MOCK_W3C_TRACE_STATE_KEY),
-            MOCK_W3C_TRACE_STATE_VALUE,
-        )
-        self.assertTrue(parent_context.is_remote)
-
-        test_env_patch.stop()
+            parent_context = span.parent
+            self.assertEqual(
+                parent_context.trace_id, span.get_span_context().trace_id
+            )
+            self.assertEqual(parent_context.span_id, test.expected_parentid)
+            self.assertEqual(
+                len(parent_context.trace_state), test.expected_trace_state_len
+            )
+            self.assertEqual(
+                parent_context.trace_state.get(MOCK_W3C_TRACE_STATE_KEY),
+                test.expected_state_value,
+            )
+            self.assertTrue(parent_context.is_remote)
+            self.memory_exporter.clear()
+            AwsLambdaInstrumentor().uninstrument()
+            test_env_patch.stop()
 
     def test_lambda_no_error_with_invalid_flush_timeout(self):
-
         test_env_patch = mock.patch.dict(
             "os.environ",
             {
@@ -300,3 +354,82 @@ class TestAwsLambdaInstrumentor(TestBase):
         assert spans
 
         test_env_patch.stop()
+
+    def test_api_gateway_proxy_event_sets_attributes(self):
+        handler_patch = mock.patch.dict(
+            "os.environ",
+            {_HANDLER: "tests.mocks.lambda_function.rest_api_handler"},
+        )
+        handler_patch.start()
+
+        AwsLambdaInstrumentor().instrument()
+
+        mock_execute_lambda(MOCK_LAMBDA_API_GATEWAY_PROXY_EVENT)
+
+        span = self.memory_exporter.get_finished_spans()[0]
+
+        self.assertSpanHasAttributes(
+            span,
+            {
+                SpanAttributes.FAAS_TRIGGER: "http",
+                SpanAttributes.HTTP_METHOD: "POST",
+                SpanAttributes.HTTP_ROUTE: "/{proxy+}",
+                SpanAttributes.HTTP_TARGET: "/{proxy+}?foo=bar",
+                SpanAttributes.NET_HOST_NAME: "1234567890.execute-api.us-east-1.amazonaws.com",
+                SpanAttributes.HTTP_USER_AGENT: "Custom User Agent String",
+                SpanAttributes.HTTP_SCHEME: "https",
+                SpanAttributes.HTTP_STATUS_CODE: 200,
+            },
+        )
+
+    def test_api_gateway_http_api_proxy_event_sets_attributes(self):
+        AwsLambdaInstrumentor().instrument()
+
+        mock_execute_lambda(MOCK_LAMBDA_API_GATEWAY_HTTP_API_EVENT)
+
+        span = self.memory_exporter.get_finished_spans()[0]
+
+        self.assertSpanHasAttributes(
+            span,
+            {
+                SpanAttributes.FAAS_TRIGGER: "http",
+                SpanAttributes.HTTP_METHOD: "POST",
+                SpanAttributes.HTTP_ROUTE: "/path/to/resource",
+                SpanAttributes.HTTP_TARGET: "/path/to/resource?parameter1=value1&parameter1=value2&parameter2=value",
+                SpanAttributes.NET_HOST_NAME: "id.execute-api.us-east-1.amazonaws.com",
+                SpanAttributes.HTTP_USER_AGENT: "agent",
+            },
+        )
+
+    def test_lambda_handles_list_event(self):
+        AwsLambdaInstrumentor().instrument()
+
+        mock_execute_lambda([{"message": "test"}])
+
+        spans = self.memory_exporter.get_finished_spans()
+
+        assert spans
+
+    def test_uninstrument(self):
+        AwsLambdaInstrumentor().instrument()
+
+        mock_execute_lambda(MOCK_LAMBDA_API_GATEWAY_HTTP_API_EVENT)
+
+        spans = self.memory_exporter.get_finished_spans()
+        self.assertEqual(len(spans), 1)
+
+        self.memory_exporter.clear()
+        AwsLambdaInstrumentor().uninstrument()
+
+        mock_execute_lambda(MOCK_LAMBDA_API_GATEWAY_HTTP_API_EVENT)
+        spans = self.memory_exporter.get_finished_spans()
+        self.assertEqual(len(spans), 0)
+
+    def test_no_op_tracer_provider(self):
+        tracer_provider = NoOpTracerProvider()
+        AwsLambdaInstrumentor().instrument(tracer_provider=tracer_provider)
+
+        mock_execute_lambda(MOCK_LAMBDA_API_GATEWAY_HTTP_API_EVENT)
+        spans = self.memory_exporter.get_finished_spans()
+        assert spans is not None
+        self.assertEqual(len(spans), 0)

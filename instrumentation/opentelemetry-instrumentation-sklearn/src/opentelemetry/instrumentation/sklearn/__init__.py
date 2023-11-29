@@ -35,7 +35,7 @@ Package instrumentation example:
     ).instrument()
 
 
-Model intrumentation example:
+Model instrumentation example:
 
 .. code-block:: python
 
@@ -82,6 +82,8 @@ from sklearn.tree import BaseDecisionTree
 from sklearn.utils.metaestimators import _IffHasAttrDescriptor
 
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
+
+# pylint: disable=no-name-in-module
 from opentelemetry.instrumentation.sklearn.package import _instruments
 from opentelemetry.instrumentation.sklearn.version import __version__
 from opentelemetry.trace import get_tracer
@@ -129,9 +131,11 @@ def implement_span_function(func: Callable, name: str, attributes: Attributes):
 
     @wraps(func)
     def wrapper(*args, **kwargs):
-        with get_tracer(__name__, __version__).start_as_current_span(
-            name=name
-        ) as span:
+        with get_tracer(
+            __name__,
+            __version__,
+            schema_url="https://opentelemetry.io/schemas/1.11.0",
+        ).start_as_current_span(name=name) as span:
             if span.is_recording():
                 for key, val in attributes.items():
                     span.set_attribute(key, val)
@@ -198,7 +202,7 @@ def get_base_estimators(packages: List[str]) -> Dict[str, Type[BaseEstimator]]:
     for package_name in packages:
         lib = import_module(package_name)
         package_dir = os.path.dirname(lib.__file__)
-        for (_, module_name, _) in iter_modules([package_dir]):
+        for _, module_name, _ in iter_modules([package_dir]):
             # import the module and iterate through its attributes
             try:
                 module = import_module(package_name + "." + module_name)
@@ -291,7 +295,7 @@ class SklearnInstrumentor(BaseInstrumentor):
         SklearnInstrumentor(packages=packages).instrument()
 
 
-    Model intrumentation example:
+    Model instrumentation example:
 
     .. code-block:: python
 

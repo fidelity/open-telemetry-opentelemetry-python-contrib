@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 import os
 import subprocess
+from subprocess import CalledProcessError
+
+import tomli
 
 scripts_path = os.path.dirname(os.path.abspath(__file__))
 root_path = os.path.dirname(scripts_path)
@@ -27,13 +29,30 @@ def get_instrumentation_packages():
         if not os.path.isdir(pkg_path):
             continue
 
-        out = subprocess.check_output(
-            "python setup.py meta",
-            shell=True,
-            cwd=pkg_path,
-            universal_newlines=True,
-        )
-        instrumentation = json.loads(out.splitlines()[1])
+        try:
+            version = subprocess.check_output(
+                "hatch version",
+                shell=True,
+                cwd=pkg_path,
+                universal_newlines=True,
+            )
+        except CalledProcessError as exc:
+            print(f"Could not get hatch version from path {pkg_path}")
+            print(exc.output)
+            raise exc
+
+        pyproject_toml_path = os.path.join(pkg_path, "pyproject.toml")
+
+        with open(pyproject_toml_path, "rb") as file:
+            pyproject_toml = tomli.load(file)
+
+        instrumentation = {
+            "name": pyproject_toml["project"]["name"],
+            "version": version.strip(),
+            "instruments": pyproject_toml["project"]["optional-dependencies"][
+                "instruments"
+            ],
+        }
         instrumentation["requirement"] = "==".join(
             (
                 instrumentation["name"],

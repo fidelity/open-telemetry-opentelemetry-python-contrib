@@ -28,7 +28,6 @@ def _extract_conn_attributes(conn_kwargs):
         SpanAttributes.DB_SYSTEM: DbSystemValues.REDIS.value,
     }
     db = conn_kwargs.get("db", 0)
-    attributes[SpanAttributes.DB_NAME] = db
     attributes[SpanAttributes.DB_REDIS_DATABASE_INDEX] = db
     try:
         attributes[SpanAttributes.NET_PEER_NAME] = conn_kwargs.get(
@@ -44,30 +43,28 @@ def _extract_conn_attributes(conn_kwargs):
         attributes[SpanAttributes.NET_PEER_NAME] = conn_kwargs.get("path", "")
         attributes[
             SpanAttributes.NET_TRANSPORT
-        ] = NetTransportValues.UNIX.value
+        ] = NetTransportValues.OTHER.value
 
     return attributes
 
 
 def _format_command_args(args):
-    """Format command arguments and trim them as needed"""
-    value_max_len = 100
-    value_too_long_mark = "..."
+    """Format and sanitize command arguments, and trim them as needed"""
     cmd_max_len = 1000
-    length = 0
-    out = []
-    for arg in args:
-        cmd = str(arg)
+    value_too_long_mark = "..."
 
-        if len(cmd) > value_max_len:
-            cmd = cmd[:value_max_len] + value_too_long_mark
+    # Sanitized query format: "COMMAND ? ?"
+    args_length = len(args)
+    if args_length > 0:
+        out = [str(args[0])] + ["?"] * (args_length - 1)
+        out_str = " ".join(out)
 
-        if length + len(cmd) > cmd_max_len:
-            prefix = cmd[: cmd_max_len - length]
-            out.append(f"{prefix}{value_too_long_mark}")
-            break
+        if len(out_str) > cmd_max_len:
+            out_str = (
+                out_str[: cmd_max_len - len(value_too_long_mark)]
+                + value_too_long_mark
+            )
+    else:
+        out_str = ""
 
-        out.append(cmd)
-        length += len(cmd)
-
-    return " ".join(out)
+    return out_str

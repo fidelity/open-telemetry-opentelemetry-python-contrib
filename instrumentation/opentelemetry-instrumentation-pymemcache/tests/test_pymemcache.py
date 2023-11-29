@@ -24,13 +24,14 @@ from pymemcache.exceptions import (
     MemcacheUnknownError,
 )
 
+# pylint: disable=import-error,no-name-in-module
+from tests.utils import MockSocket, _str
+
 from opentelemetry import trace as trace_api
 from opentelemetry.instrumentation.pymemcache import PymemcacheInstrumentor
 from opentelemetry.semconv.trace import SpanAttributes
 from opentelemetry.test.test_base import TestBase
 from opentelemetry.trace import get_tracer
-
-from .utils import MockSocket, _str
 
 TEST_HOST = "localhost"
 TEST_PORT = 117711
@@ -508,6 +509,19 @@ class PymemcacheClientTestCase(
         self.assertEqual(len(spans), 0)
 
         PymemcacheInstrumentor().instrument()
+
+    def test_no_op_tracer_provider(self):
+        PymemcacheInstrumentor().uninstrument()
+        tracer_provider = trace_api.NoOpTracerProvider()
+        PymemcacheInstrumentor().instrument(tracer_provider=tracer_provider)
+
+        client = self.make_client([b"STORED\r\n"])
+        result = client.set(b"key", b"value", noreply=False)
+        self.assertTrue(result)
+
+        spans = self.memory_exporter.get_finished_spans()
+        assert spans is not None
+        self.assertEqual(len(spans), 0)
 
 
 class PymemcacheHashClientTestCase(TestBase):
